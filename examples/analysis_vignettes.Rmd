@@ -1,0 +1,149 @@
+#' ---
+#' title: "CHARLS Harmonized Dataset — Analytical Vignettes"
+#' author: "aiver2001"
+#' date: "2026-06-13"
+#' output: html_document
+#' ---
+#'
+#' # Example Analyses with the Harmonized CHARLS Dataset
+#'
+#' This vignette demonstrates common longitudinal analysis patterns
+#' using the harmonized CHARLS panel dataset.
+#'
+#' ## Setup
+
+# Load required packages
+library(survival)
+library(lme4)
+library(geepack)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+# Load harmonized dataset (adjust path as needed)
+charls <- read.csv("charls_harmonized.csv")
+cat(sprintf("Loaded: %d individuals × %d variables\n", nrow(charls), ncol(charls)))
+
+#' ---
+#' ## Example 1: Association of Baseline Hypertension with All-Cause Mortality
+#'
+#' Using Cox proportional hazards with baseline (Wave 1, 2011) predictors.
+
+# Prepare baseline data
+baseline <- charls %>%
+  select(ID, age_wave1, gender_wave1, rural_wave1, education_wave1,
+         hibpe_wave1, diabe_wave1, hearte_wave1, stroke_wave1,
+         smokev_wave1, bmi_wave1, DEAD, DEADYEAR) %>%
+  mutate(
+    gender = factor(gender_wave1, labels = c("Male", "Female")),
+    rural  = factor(rural_wave1, labels = c("Urban", "Rural")),
+    smoke  = factor(smokev_wave1, labels = c("Never", "Former", "Current")),
+    surv_time = ifelse(DEAD == 1, DEADYEAR - 2011, 2020 - 2011)
+  ) %>%
+  filter(!is.na(age_wave1))
+
+# Fit Cox model
+cox_fit <- coxph(Surv(surv_time, DEAD) ~ age_wave1 + gender + rural +
+                  hibpe_wave1 + diabe_wave1 + hearte_wave1 + stroke_wave1 +
+                  smoke + bmi_wave1, data = baseline)
+
+summary(cox_fit)
+
+#' ---
+#' ## Example 2: Longitudinal Trajectory of CESD-10 Depression Scores
+#'
+#' Linear mixed-effects model for repeated CESD-10 measures across waves.
+
+# Reshape to long format
+cesd_long <- charls %>%
+  select(ID, age_wave1, gender_wave1, rural_wave1,
+         cesd10_wave1, cesd10_wave2, cesd10_wave3, cesd10_wave4, cesd10_wave5) %>%
+  pivot_longer(
+    cols = starts_with("cesd10_wave"),
+    names_to = "wave",
+    names_pattern = "cesd10_wave(.*)",
+    values_to = "cesd10",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(
+    wave = as.numeric(wave),
+    gender = factor(gender_wave1, labels = c("Male", "Female")),
+    rural  = factor(rural_wave1, labels = c("Urban", "Rural"))
+  )
+
+# Fit linear mixed model
+lmm <- lmer(cesd10 ~ wave + age_wave1 + gender + rural + (1 | ID),
+            data = cesd_long)
+
+summary(lmm)
+
+# Plot trajectories for 50 random individuals
+set.seed(42)
+rand_ids <- sample(unique(cesd_long$ID), 50)
+cesd_long %>%
+  filter(ID %in% rand_ids) %>%
+  ggplot(aes(x = wave, y = cesd10, group = ID)) +
+  geom_line(alpha = 0.3, color = "steelblue") +
+  geom_smooth(aes(group = 1), method = "loess", se = TRUE, color = "darkred", size = 1.5) +
+  labs(x = "Wave", y = "CESD-10 Score",
+       title = "CESD-10 Depression Trajectories (2011–2020)",
+       subtitle = "50 randomly selected CHARLS participants") +
+  theme_minimal()
+
+#' ---
+#' ## Example 3: GEE for Binary Outcome — Incident Hypertension
+#'
+#' Generalized Estimating Equations for hypertension incidence across waves.
+
+# Identify wave 1 non-hypertensive participants, track incident hypertension
+htn_long <- charls %>%
+  filter(hibpe_wave1 == 0) %>%  # No hypertension at baseline
+  select(ID, age_wave1, gender_wave1, rural_wave1,
+         bmi_wave1, smokev_wave1,
+         hibpe_wave1, hibpe_wave2, hibpe_wave3, hibpe_wave4, hibpe_wave5) %>%
+  pivot_longer(
+    cols = starts_with("hibpe_wave"),
+    names_to = "wave",
+    names_pattern = "hibpe_wave(.*)",
+    values_to = "hypertension"
+  ) %>%
+  mutate(
+    wave = as.numeric(wave),
+    gender = factor(gender_wave1, labels = c("Male", "Female")),
+    rural  = factor(rural_wave1, labels = c("Urban", "Rural")),
+    smoke  = factor(smokev_wave1, labels = c("Never", "Former", "Current")),
+    time = wave - 1  # Years since baseline (biennial waves)
+  ) %>%
+  filter(!is.na(hypertension))
+
+# GEE with exchangeable correlation structure
+gee_fit <- geeglm(
+  hypertension ~ time + age_wave1 + gender + rural + bmi_wave1 + smoke,
+  id = ID, data = htn_long, family = binomial,
+  corstr = "exchangeable"
+)
+
+summary(gee_fit)
+
+#' ---
+#' ## Example 4: Frailty Index Construction (Wave 1)
+#'
+#' Demonstrating how to build a deficit-accumulation frailty index
+#' from harmonized variables (available in the extended dataset).
+
+# (This example uses extended variables available in the full harmonized dataset.
+#  Requires additional ADL, IADL, and chronic disease items.)
+#
+# frailty_items <- c(
+#   "adl_dressing_wave1", "adl_bathing_wave1", "adl_eating_wave1",
+#   "iadl_shopping_wave1", "iadl_cooking_wave1",
+#   "hibpe_wave1", "diabe_wave1", "hearte_wave1", "stroke_wave1",
+#   "arthre_wave1", "lunge_wave1", "cancre_wave1",
+#   "cesd10_wave1", "total_cognition_wave1",
+#   "bmi_wave1", "sleep_wave1"
+# )
+#
+# fi_data <- charls[, frailty_items]
+# fi_score <- rowMeans(fi_data, na.rm = TRUE)  # 0–1 scale
+
+cat("\nVignette complete. See manuscript for full analysis details.\n")
